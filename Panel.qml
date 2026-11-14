@@ -106,6 +106,12 @@ BarWidget {
         (s.receiver_error ? tr.t("receiver.failed") : "")
     } else if (!session) statusError = ""
   }
+  function openNstream() {
+    if (openProc.running) return
+    message = ""
+    openProc.command = helperCommand(["open"])
+    openProc.running = true
+  }
   function control(args) {
     if (controlProc.running) return
     message = ""
@@ -170,7 +176,10 @@ BarWidget {
       messageIsError = false
       message = tr.t("command.accepted")
     } else if (d.kind === "open") {
-      root.close()
+      if (d.result === "already_open") {
+        messageIsError = false
+        message = tr.t("open.already")
+      } else root.close()
     } else {
       messageIsError = false
       message = tr.t("command.accepted")
@@ -221,6 +230,7 @@ BarWidget {
     function toggle(): void { root.opened = !root.opened }
     function open(): void { root.opened = true }
     function close(): void { root.opened = false }
+    function launch(): void { root.openNstream() }
     function status(): string {
       return JSON.stringify({api_version: root.watchCompatible ? 1 : null,
         connected: root.watchCompatible && Date.now() - root.watchReceived < 5000,
@@ -249,6 +259,7 @@ BarWidget {
     }
   }
   HelperProcess { id: controlProc }
+  HelperProcess { id: openProc; kind: "open" }
   HelperProcess { id: continueProc; kind: "continue" }
   HelperProcess { id: localProc; kind: "local" }
 
@@ -332,8 +343,8 @@ BarWidget {
           trailingControl: Component {
             Ui.Button {
               text: tr.t("open")
-              enabled: !controlProc.running
-              onClicked: root.control(["open"])
+              enabled: !openProc.running
+              onClicked: root.openNstream()
             }
           }
         }

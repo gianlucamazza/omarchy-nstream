@@ -277,26 +277,43 @@ class RunTest(unittest.TestCase):
 
 
 class OpenTest(unittest.TestCase):
-    def test_launcher_uses_augmented_environment_and_reports_missing_tools(self):
+    def test_launcher_missing_is_reported(self):
         with mock.patch.object(helper.shutil, "which", return_value=None):
             response, _ = call("open")
         self.assertFalse(response["ok"])
-        with (
-            mock.patch.object(helper.shutil, "which", return_value="/bin/launcher"),
-            mock.patch.object(helper.subprocess, "Popen") as popen,
-        ):
-            response, _ = call("open")
-        self.assertTrue(response["ok"])
-        self.assertIn(os.path.expanduser("~/.local/bin"), popen.call_args.kwargs["env"]["PATH"])
-        with (
-            mock.patch.object(helper.shutil, "which", return_value="/bin/launcher"),
-            mock.patch.object(helper.subprocess, "Popen", side_effect=OSError("secret")),
-        ):
+
+    def test_open_waits_for_confirmed_activation(self):
+        for result in ("opened", "focused", "already_open"):
+            body = {"api_version": 1, "action": "launch", "ok": True, "result": result}
+            with mock.patch.object(helper.shutil, "which", return_value="/bin/launcher"), \
+                 mock.patch.object(helper.subprocess, "run", return_value=subprocess.CompletedProcess(
+                     [], 0, json.dumps(body).encode())) as run:
+                response, _ = call("open")
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["result"], result)
+            self.assertEqual(run.call_args.args[0], ["/bin/launcher", "--json"])
+            self.assertIn(os.path.expanduser("~/.local/bin"), run.call_args.kwargs["env"]["PATH"])
+
+    def test_open_failure_is_not_a_successful_spawn(self):
+        for code in ("terminal_missing", "focus_failed", "launch_failed", "launch_timeout"):
+            body = {"api_version": 1, "action": "launch", "ok": False, "error": code}
+            with mock.patch.object(helper.shutil, "which", return_value="/bin/launcher"), \
+                 mock.patch.object(helper.subprocess, "run", return_value=subprocess.CompletedProcess(
+                     [], 1, json.dumps(body).encode())):
+                response, _ = call("open")
+            self.assertFalse(response["ok"])
+
+    def test_open_rejects_timeout_and_unconfirmed_or_malformed_reply(self):
+        outputs = [b'{}', b'not json', b'{"ok":true}', b'x' * (helper.MAX_OUTPUT + 1)]
+        for output in outputs:
+            with mock.patch.object(helper.shutil, "which", return_value="/bin/launcher"), \
+                 mock.patch.object(helper.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)):
+                response, _ = call("open")
+            self.assertFalse(response["ok"])
+        with mock.patch.object(helper.shutil, "which", return_value="/bin/launcher"), \
+             mock.patch.object(helper.subprocess, "run", side_effect=subprocess.TimeoutExpired([], 15)):
             response, _ = call("open")
         self.assertFalse(response["ok"])
-        self.assertNotIn("secret", json.dumps(response))
-
-
 
 
 class DesktopProtocolTest(unittest.TestCase):

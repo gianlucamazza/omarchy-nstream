@@ -225,21 +225,33 @@ def cmd_continue(target: str, title: str) -> int:
 
 def cmd_open() -> int:
     env = child_env()
-    exe = shutil.which("nstream-fuzzel", path=env["PATH"])
-    if exe is None or shutil.which("foot", path=env["PATH"]) is None:
-        return fail("open", "servono nstream-fuzzel e foot per aprire nstream")
+    exe = shutil.which("nstream-launch", path=env["PATH"])
+    if exe is None:
+        return fail("open", "aggiorna nstream: serve il launcher con conferma di apertura")
     try:
-        subprocess.Popen(
-            [exe],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            env=env,
-        )
-    except OSError:
-        return fail("open", "impossibile aprire nstream")
-    return emit({"kind": "open", "ok": True})
+        proc = subprocess.run([exe, "--json"], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=15, env=env)
+        if len(proc.stdout) > MAX_OUTPUT:
+            return fail("open", "risposta del launcher non valida")
+        data = json.loads(proc.stdout)
+    except subprocess.TimeoutExpired:
+        return fail("open", "apertura non confermata in tempo; nessuna seconda finestra avviata")
+    except (OSError, ValueError):
+        return fail("open", "impossibile ottenere la conferma del launcher")
+    if (not isinstance(data, dict) or data.get("api_version") != 1
+            or data.get("action") != "launch" or type(data.get("ok")) is not bool):
+        return fail("open", "protocollo launcher incompatibile; aggiorna nstream")
+    result = data.get("result")
+    if proc.returncode == 0 and data["ok"] and result in ("opened", "focused", "already_open"):
+        return emit({"kind": "open", "ok": True, "result": result})
+    messages = {
+        "terminal_missing": "foot non è installato",
+        "focus_failed": "nstream è già aperto, ma non è stato possibile attivare la finestra",
+        "launch_busy": "apertura già in corso, ma non ancora confermata",
+        "launch_timeout": "apertura non confermata in tempo; controlla la finestra nstream",
+    }
+    return fail("open", messages.get(data.get("error"), "impossibile aprire nstream"))
 
 
 def cmd_watch() -> int:

@@ -9,12 +9,13 @@ A remote for [nstream](https://github.com/gianlucamazza/nstream) in the
   this computer. A finished episode continues with the next one.
 
 The bar icon lights up while a cast is live. Everything else stays in nstream itself; the
-**Open nstream** button opens its TUI.
+**Open nstream** button opens its TUI. With the shared `nstream-launch` helper,
+repeated activation focuses the existing window instead of creating another session.
 
 ## Requirements
 
 - Omarchy with shell plugin support
-- nstream 1.46.0 or newer with desktop protocol v1 (`--json --watch` and
+- nstream 1.47.0 or newer with desktop protocol v1 (`--json --watch` and
   `--session-id`), on `PATH` or in `~/.local/bin`.
 - `catt` for casting (`uv tool install catt`), `mpv` for local playback
 
@@ -23,7 +24,7 @@ The bar icon lights up while a cast is live. Everything else stays in nstream it
 Install nstream, then add this plugin:
 
 ```sh
-uv tool install 'nstream>=1.46.0'
+uv tool install 'nstream>=1.47.0'
 omarchy plugin add https://github.com/gianlucamazza/omarchy-nstream.git --enable
 ```
 
@@ -94,3 +95,14 @@ Keep both interfaces compatible when changing either project.
 ## License
 
 MIT
+
+The Open action uses `nstream-launch --json` and waits for an activation acknowledgement.
+It closes the panel only for a confirmed opened/focused window, reports startup failures,
+and shows a manual-focus hint when a TUI exists without compositor activation support.
+A successful helper spawn alone is never treated as an opened application.
+
+QML action coverage runs the actual Open button binding and panel action functions inside
+Qt Quick Test with desktop services substituted. It covers idle/no-session use, concurrent
+cast controls, repeat clicks and activation errors. It requires Qt's `qmltestrunner` (Qt 6
+Declarative tools and QtTest/QtQuick QML modules), not Omarchy or Quickshell. CI requires
+these tests and the history/watch contracts against nstream 1.47.0 from PyPI.

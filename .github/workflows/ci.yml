@@ -13,7 +13,16 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
-      - name: helper unit tests
+      - name: Qt QML test runtime and released backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-declarative-dev-tools qml6-module-qttest qml6-module-qtquick qml6-module-qtqml-workerscript
+          python3 -m pip install nstream==1.47.0
+      - name: helper, QML action and real protocol tests
+        env:
+          NSTREAM_CONTRACT_TEST: "1"
+          NSTREAM_REQUIRE_QML_TESTS: "1"
+          QMLTESTRUNNER: /usr/lib/qt6/bin/qmltestrunner
         run: python3 -B -m unittest discover -s tests
       - name: manifest and catalogs
         run: |

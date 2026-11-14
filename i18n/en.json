@@ -39,5 +39,6 @@
   "delivery.failed": "Media delivery error: %1",
   "receiver.failed": "The receiver reports a playback error.",
   "command.accepted": "Command accepted; waiting for the next TV reading.",
-  "state.unavailable": "TV status unavailable"
+  "state.unavailable": "TV status unavailable",
+  "open.already": "nstream is already open; bring its window forward."
 }
