@@ -21,7 +21,15 @@ BarWidget {
   property var entries: []
   property var session: null
   property var status: null
-  property string historyRaw: ""
+  property real watchSequence: 0
+  property real watchReceived: 0
+  property bool watchCompatible: false
+  property real sampledAt: 0
+  property string connectionState: "idle"
+  property real clockNow: Date.now()
+  readonly property bool telemetryStale: casting && (connectionState !== "connected" ||
+      sampledAt <= 0 || clockNow / 1000 - sampledAt > 10 || clockNow - watchReceived > 5000)
+  property int reconnectDelay: 5000
   property string historyError: ""
   property string statusError: ""
   property string localTitle: ""
@@ -56,21 +64,56 @@ BarWidget {
   function close() { opened = false }
   function helperCommand(args) { return ["python3", "-I", "-B", helper].concat(args) }
 
-  function pollHistory() {
-    if (historyProc.running) return
-    historyProc.command = helperCommand(["history"])
-    historyProc.running = true
-  }
   function pollStatus() {
-    if (statusProc.running || !casting) return
-    statusProc.command = helperCommand(["status"])
-    statusProc.running = true
+    if (watchProc.running) watchProc.write(JSON.stringify({observe: opened}) + "\n")
+  }
+  function receiveSnapshot(text) {
+    var d
+    try { d = JSON.parse(text) } catch (e) { d = null }
+    if (!d || d.api_version !== 1 || d.action !== "watch" || !d.ok ||
+        !(d.capabilities instanceof Array) || d.capabilities.indexOf("session_guard") < 0 ||
+        d.capabilities.indexOf("watch") < 0 || d.capabilities.indexOf("receiver_interest") < 0 ||
+        !(d.entries instanceof Array) || d.entries.length > 30 ||
+        typeof d.sequence !== "number" || d.sequence <= watchSequence) {
+      historyError = tr.t("watch.incompatible")
+      watchCompatible = false
+      return
+    }
+    watchCompatible = true
+    reconnectDelay = 5000
+    watchSequence = d.sequence
+    watchReceived = Date.now()
+    historyError = ""
+    entries = d.entries
+    if (!targetChosen) target = d.prefer_cast ? "cast" : "local"
+    var next = d.cast_session
+    if (next && (typeof next.session_id !== "string" || typeof next.device !== "string")) return
+    if (!next || !session || next.session_id !== session.session_id) {
+      status = null
+      statusError = ""
+      message = ""
+    }
+    session = next || null
+    var t = d.telemetry || {}
+    connectionState = String(t.connection || "disconnected")
+    sampledAt = Number(t.sampled_at || 0)
+    if (session && t.status) {
+      var s = t.status
+      status = { state: String(s.player_state || ""), position: Number(s.position || 0),
+        duration: Number(s.duration || 0),
+        volume: s.volume_percent === null || s.volume_percent === undefined ? -1 : Number(s.volume_percent) }
+      statusError = s.delivery_error ? tr.t("delivery.failed").arg(String(s.delivery_error)) :
+        (s.receiver_error ? tr.t("receiver.failed") : "")
+    } else if (!session) statusError = ""
   }
   function control(args) {
     if (controlProc.running) return
     message = ""
+    if (!watchCompatible || !session) return
+    controlProc.sessionId = session.session_id
     controlProc.kind = args[0]
-    controlProc.command = helperCommand(args)
+    controlProc.command = helperCommand(args.concat(["--session-id", session.session_id,
+      "--device", session.device]))
     controlProc.running = true
   }
   function resumeEntry(entry) {
@@ -101,29 +144,13 @@ BarWidget {
     try { d = JSON.parse(text) } catch (e) { d = null }
     if (!d || typeof d !== "object" || d.kind !== kind || typeof d.ok !== "boolean")
       d = { kind: kind, ok: false, error: tr.t("process.failed") }
-    if (d.kind === "history") {
-      if (!d.ok) { historyError = String(d.error || ""); return }
-      historyError = ""
-      if (!targetChosen) target = d.preferCast ? "cast" : "local"
-      if (text === historyRaw) return
-      historyRaw = text
-      entries = d.entries instanceof Array ? d.entries : []
-      var wasCasting = casting
-      session = d.session && typeof d.session === "object" ? d.session : null
-      if (!session) { status = null; statusError = "" }
-      else if (!wasCasting && opened) pollStatus()
-    } else if (d.kind === "status") {
-      if (!casting) return
-      status = d.ok ? d : null
-      statusError = d.ok ? "" : String(d.error || "")
-    } else if (d.kind === "local") {
+    if (d.kind === "local") {
       if (!d.ok) {
         messageIsError = true
         message = String(d.error || "")
         notify(tr.t("notify.failed").arg(localTitle), message)
       }
       localTitle = ""
-      pollHistory()
     } else if (d.kind === "continue") {
       var title = starting
       starting = ""
@@ -136,16 +163,17 @@ BarWidget {
       messageIsError = false
       message = d.notice ? String(d.notice) : ""
       notify(tr.t("notify.cast").arg(String(d.title || title)), String(d.device || ""))
-      pollHistory()
     } else if (!d.ok) {
       messageIsError = true
       message = String(d.error || "")
     } else if (d.kind === "stop") {
-      session = null
-      status = null
-      pollHistory()
+      messageIsError = false
+      message = tr.t("command.accepted")
     } else if (d.kind === "open") {
       root.close()
+    } else {
+      messageIsError = false
+      message = tr.t("command.accepted")
     }
   }
 
@@ -177,7 +205,8 @@ BarWidget {
     return device !== "" ? tr.t("casting.device").arg(device) : tr.t("casting")
   }
   function stateLabel() {
-    if (!status) return tr.t("state.unknown")
+    if (!status) return connectionState === "disconnected" ? tr.t("state.unavailable") : tr.t("state.unknown")
+    if (telemetryStale) return tr.t("state.stale")
     if (playing) return tr.t("state.playing")
     if (paused) return tr.t("state.paused")
     if (status.state === "BUFFERING") return tr.t("state.buffering")
@@ -185,46 +214,76 @@ BarWidget {
     return status.state
   }
 
-  onOpenedChanged: { message = ""; if (opened) { pollHistory(); pollStatus() } }
+  onOpenedChanged: { message = ""; pollStatus() }
 
   Commons.ShellIpc {
     target: "gianlucamazza.nstream"
     function toggle(): void { root.opened = !root.opened }
     function open(): void { root.opened = true }
     function close(): void { root.opened = false }
+    function status(): string {
+      return JSON.stringify({api_version: root.watchCompatible ? 1 : null,
+        connected: root.watchCompatible && Date.now() - root.watchReceived < 5000,
+        sequence: root.watchSequence, connection: root.connectionState,
+        stale: root.telemetryStale, observing: root.opened})
+    }
   }
 
   component HelperProcess: Process {
     id: proc
     property string kind: ""
+    property string sessionId: ""
     property bool received: false
     onRunningChanged: if (running) received = false
     stdout: StdioCollector {
-      onStreamFinished: { proc.received = true; root.receive(text, proc.kind) }
+      onStreamFinished: {
+        proc.received = true
+        if (proc !== controlProc || (root.session && root.session.session_id === proc.sessionId))
+          root.receive(text, proc.kind)
+      }
     }
     onExited: {
-      if (!received) root.receive("", kind)
+      if (!received && (proc !== controlProc || (root.session && root.session.session_id === proc.sessionId)))
+        root.receive("", kind)
       if (proc === controlProc && root.opened) root.pollStatus()
     }
   }
-  HelperProcess { id: historyProc; kind: "history" }
-  HelperProcess { id: statusProc; kind: "status" }
   HelperProcess { id: controlProc }
   HelperProcess { id: continueProc; kind: "continue" }
   HelperProcess { id: localProc; kind: "local" }
 
-  // History is a local read (no network): cheap enough to poll in the background.
-  Timer {
-    interval: root.opened ? 5000 : 30000
-    running: true; repeat: true; triggeredOnStart: true
-    onTriggered: root.pollHistory()
+  Process {
+    id: watchProc
+    command: root.helperCommand(["watch"])
+    stdinEnabled: true
+    running: true
+    onStarted: {
+      root.watchSequence = 0
+      root.watchCompatible = false
+      root.pollStatus()
+    }
+    stdout: SplitParser { onRead: data => root.receiveSnapshot(data) }
+    stderr: StdioCollector {}
+    onExited: {
+      root.watchCompatible = false
+      root.connectionState = "disconnected"
+      if (root.historyError === "") root.historyError = tr.t("watch.unavailable")
+      reconnectTimer.start()
+    }
   }
-  // The receiver is only asked while the panel is open and a cast is live.
   Timer {
-    interval: 3000
-    running: root.opened && root.casting
+    id: reconnectTimer
+    interval: root.reconnectDelay
+    onTriggered: {
+      root.reconnectDelay = Math.min(30000, root.reconnectDelay * 2)
+      watchProc.running = true
+    }
+  }
+  Timer {
+    interval: 1000
+    running: true
     repeat: true
-    onTriggered: root.pollStatus()
+    onTriggered: root.clockNow = Date.now()
   }
 
   component Plain: Text {
@@ -308,7 +367,7 @@ BarWidget {
           }
           Ui.PanelSlider {
             id: seekSlider
-            enabled: !controlProc.running
+            enabled: root.watchCompatible && !controlProc.running
             width: parent.width
             bar: root.bar
             visible: root.duration > 0
@@ -323,24 +382,24 @@ BarWidget {
             spacing: Style.space(6)
             Ui.PanelActionButton {
               iconText: root.iconBack; tooltipText: tr.t("act.back")
-              enabled: !controlProc.running
+              enabled: root.watchCompatible && !controlProc.running
               onClicked: root.control(["seek", "-30"])
             }
             Ui.PanelActionButton {
               iconText: root.playing ? root.iconPause : root.iconPlay
               tooltipText: root.playing ? tr.t("act.pause") : tr.t("act.play")
-              enabled: !controlProc.running
+              enabled: root.watchCompatible && !controlProc.running
               onClicked: root.control([root.playing ? "pause" : "resume"])
             }
             Ui.PanelActionButton {
               iconText: root.iconForward; tooltipText: tr.t("act.forward")
-              enabled: !controlProc.running
+              enabled: root.watchCompatible && !controlProc.running
               onClicked: root.control(["seek", "30"])
             }
             Ui.PanelActionButton {
               iconText: root.iconStop; tooltipText: tr.t("act.stop")
               hoverColor: root.urgent
-              enabled: !controlProc.running
+              enabled: root.watchCompatible && !controlProc.running
               onClicked: root.control(["stop"])
             }
           }
@@ -350,7 +409,7 @@ BarWidget {
             visible: root.status !== null && root.status.volume >= 0
             Caption { id: volumeLabel; anchors.verticalCenter: parent.verticalCenter; text: tr.t("volume") }
             Ui.PanelSlider {
-              enabled: !controlProc.running
+              enabled: root.watchCompatible && !controlProc.running
               width: parent.width - volumeLabel.width - parent.spacing
               anchors.verticalCenter: parent.verticalCenter
               bar: root.bar
@@ -363,11 +422,11 @@ BarWidget {
             spacing: Style.space(4)
             Caption { anchors.verticalCenter: parent.verticalCenter; text: tr.t("subtitles") }
             Ui.Button {
-              text: tr.t("sub.earlier"); bordered: true; enabled: !controlProc.running
+              text: tr.t("sub.earlier"); bordered: true; enabled: root.watchCompatible && !controlProc.running
               onClicked: root.control(["subshift", "-0.5"])
             }
             Ui.Button {
-              text: tr.t("sub.later"); bordered: true; enabled: !controlProc.running
+              text: tr.t("sub.later"); bordered: true; enabled: root.watchCompatible && !controlProc.running
               onClicked: root.control(["subshift", "0.5"])
             }
           }

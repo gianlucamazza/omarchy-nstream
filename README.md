@@ -14,16 +14,17 @@ The bar icon lights up while a cast is live. Everything else stays in nstream it
 ## Requirements
 
 - Omarchy with shell plugin support
-- nstream newer than 1.43 (it needs `--json --history`), on `PATH` or in `~/.local/bin`
+- nstream 1.46.0 or newer with desktop protocol v1 (`--json --watch` and
+  `--session-id`), on `PATH` or in `~/.local/bin`.
 - `catt` for casting (`uv tool install catt`), `mpv` for local playback
 
 ## Install
 
-From the nstream checkout (installs nstream too, and keeps both in step):
+Install nstream, then add this plugin:
 
 ```sh
-./install.sh
-omarchy plugin enable gianlucamazza.nstream
+uv tool install 'nstream>=1.46.0'
+omarchy plugin add https://github.com/gianlucamazza/omarchy-nstream.git --enable
 ```
 
 Or on its own, from its published repository:
@@ -46,39 +47,49 @@ the panel overrides it until the shell restarts.
 
 ## How it works
 
-`Panel.qml` never runs nstream itself. `helper.py` (Python stdlib) validates every
-argument, runs `nstream --json …` as an argv list (never through a shell) and forwards only
-bounded descriptive fields; nstream never puts stream URLs or tokens in `--json` output.
-All text is rendered as plain text. The helper adds `~/.local/bin` to the child
-process environment too, so nstream can find tools installed with `uv tool`.
+`Panel.qml` starts one persistent `helper.py watch` process. The adapter replaces itself
+with `nstream --json --watch`, whose versioned JSONL snapshots combine cast presence,
+continue-watching and timestamped receiver telemetry. Quickshell reads each complete line;
+no shell command interpolation is used. The CLI owns the domain model and protocol;
+the plugin does not read nstream config files for its watch state or contact castbridge.
 
-Cast controls use the active session's device; an explicit CLI `--device` still wins.
-Receiver and command errors remain visible in the panel. Local playback runs in a separate
-process: its notification acknowledges the request, and the helper waits for nstream's
-final result (normally when mpv closes) to report failures. Cast controls stay available
-while mpv runs. Closing or reloading the widget leaves the player running; a shell reload
-ends observation of that local result.
+The stream declares its API major version and capabilities before controls are enabled.
+It emits a heartbeat every second, reads local presence each tick and refreshes history
+every five seconds. Receiver requests require explicit interest: the plugin enables them
+while its panel is open and disables them when closed. At most one receiver request is
+in flight, with a minimum three-second sampling interval. Losing telemetry preserves the
+last reading with a visible stale label; it never means playback ended. Stream loss uses
+reconnect delays of 5, 10, 20 and at most 30 seconds. Older protocols show a compatibility
+error instead of silently guessing fields.
 
-Polling is cheap by design: `--history` is a local read, polled every 30 s (5 s while the
-panel is open). The TV is only asked for its state (`--status`) while the panel is open
-and a cast is live.
+Control invocations carry the displayed session ID and device address. nstream rejects
+stale generations; the panel ignores late command responses after a session replacement.
+A successful command acknowledges backend acceptance; the next telemetry sample reports
+the receiver's observed state. Receiver and HLS delivery errors remain visible separately.
+All text is rendered as plain text and stream URLs/tokens never enter the public protocol.
+
+Playback runs independently from observation. Closing or reloading the widget closes the
+watcher's stdin and ends only observation. It never stops the TV, mpv or the detached
+HLS server. Local playback runs in a separate process; the helper waits for its final
+result while cast controls remain available. A shell reload ends that local observation.
 
 ## Development
 
 ```sh
 python3 -B -m unittest discover -s tests
+NSTREAM_CONTRACT_TEST=1 python3 -B -m unittest discover -s tests
 omarchy plugin validate .
+omarchy-shell gianlucamazza.nstream status  # protocol health; no media URLs or tokens
 ```
 
-Saving a file under `~/.config/omarchy/plugins/gianlucamazza.nstream/` reloads the widget;
-from the nstream checkout re-run `./install.sh` to copy changes over.
+Saving a file under `~/.config/omarchy/plugins/gianlucamazza.nstream/` reloads the widget.
+For local development, copy this repository's plugin files there after testing.
 
 ## Source
 
-Developed in the nstream repository under `integrations/omarchy-nstream/` (so the widget and
-the `--json` contract it relies on change together) and mirrored here for
-`omarchy plugin add`. Open issues and pull requests on
-[nstream](https://github.com/gianlucamazza/nstream).
+The plugin is developed in this repository. Its data interface is provided by
+[nstream](https://github.com/gianlucamazza/nstream) (`--json --history` and lifecycle flags).
+Keep both interfaces compatible when changing either project.
 
 ## License
 

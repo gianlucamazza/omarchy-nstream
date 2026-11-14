@@ -11,6 +11,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -36,6 +37,43 @@ def call(*argv: str, results: list[dict] | None = None) -> tuple[dict, list[list
 
 
 class HistoryTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("NSTREAM_CONTRACT_TEST"), "requires compatible installed nstream")
+    def test_real_nstream_history_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            env = {}
+            for kind in ("CONFIG", "STATE", "CACHE", "RUNTIME"):
+                root = base / kind.lower()
+                root.mkdir()
+                env[f"XDG_{kind}_HOME" if kind != "RUNTIME" else "XDG_RUNTIME_DIR"] = str(root)
+            config = base / "config" / "nstream"
+            config.mkdir()
+            (config / "config.json").write_text('{"prefer_cast": true}')
+            history = base / "state" / "nstream"
+            history.mkdir()
+            (history / "history.json").write_text(json.dumps({"tt1": {
+                "title": "Contract Movie", "type": "movie", "position": 100,
+                "duration": 1000, "ts": time.time(),
+            }}))
+            (base / "runtime" / "nstream-active-cast.json").write_text(json.dumps({
+                "title": "Contract Movie", "device": "Contract TV", "follow": True,
+                "pid": os.getpid(), "ts": time.time(),
+            }))
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out):
+                helper.main(["history"])
+            response = json.loads(out.getvalue())
+            self.assertTrue(response["ok"], response)
+            self.assertEqual(response["session"], {"title": "Contract Movie", "device": "Contract TV"})
+            self.assertEqual(response["entries"][0]["title"], "Contract Movie")
+            self.assertTrue(response["preferCast"])
+
+    def test_missing_history_interface_is_reported_as_incompatible(self):
+        out, _ = call("history", results=[{"ok": False, "error": "usage"}])
+        self.assertFalse(out["ok"])
+        self.assertIn("--json --history", out["error"])
+        self.assertNotIn("vecchio", out["error"])
+
     def test_rejects_malformed_collection(self):
         for entries in ({"title": "Show"}, "Show", None):
             out, _ = call("history", results=[{"ok": True, "entries": entries}])
@@ -257,6 +295,67 @@ class OpenTest(unittest.TestCase):
             response, _ = call("open")
         self.assertFalse(response["ok"])
         self.assertNotIn("secret", json.dumps(response))
+
+
+
+
+class DesktopProtocolTest(unittest.TestCase):
+    def test_watch_replaces_adapter_without_a_shell(self):
+        with mock.patch.object(helper, "nstream_bin", return_value="/usr/bin/nstream"), \
+             mock.patch.object(helper.os, "execvpe") as execute:
+            helper.main(["watch"])
+        self.assertEqual(execute.call_args.args[:2],
+                         ("/usr/bin/nstream", ["/usr/bin/nstream", "--json", "--watch"]))
+
+    def test_context_is_bounded_and_only_allowed_for_lifecycle(self):
+        out, _ = call("pause", "--session-id", "bad\nidentity", "--device", "TV")
+        self.assertFalse(out["ok"])
+        out, _ = call("continue", "cast", "Movie", "--session-id", "abc", "--device", "TV")
+        self.assertFalse(out["ok"])
+
+    def test_guard_reaches_backend_argv(self):
+        result = subprocess.CompletedProcess([], 0, b'{"ok":true}', b'')
+        output = io.StringIO()
+        with mock.patch.object(helper, "nstream_bin", return_value="/usr/bin/nstream"), \
+             mock.patch.object(helper.subprocess, "run", return_value=result) as execute, \
+             contextlib.redirect_stdout(output):
+            helper.main(["pause", "--session-id", "generation", "--device", "192.0.2.1"])
+        self.assertTrue(json.loads(output.getvalue())["ok"])
+        self.assertEqual(execute.call_args.args[0], ["/usr/bin/nstream", "--json", "--pause",
+                         "--session-id", "generation", "--device", "192.0.2.1"])
+
+    @unittest.skipUnless(os.environ.get("NSTREAM_CONTRACT_TEST"), "requires watch-capable nstream")
+    def test_real_watch_contract_and_clean_observer_exit(self):
+        import select
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            env = helper.child_env()
+            for kind in ("CONFIG", "STATE", "CACHE", "RUNTIME"):
+                root = base / kind.lower()
+                root.mkdir()
+                env[f"XDG_{kind}_HOME" if kind != "RUNTIME" else "XDG_RUNTIME_DIR"] = str(root)
+            config = base / "config" / "nstream"
+            config.mkdir()
+            (config / "config.json").write_text('{}')
+            proc = subprocess.Popen([sys.executable, "-I", "-B", str(pathlib.Path(helper.__file__)), "watch"],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, env=env)
+            try:
+                self.assertTrue(select.select([proc.stdout], [], [], 10)[0])
+                snapshot = json.loads(proc.stdout.readline())
+                self.assertEqual(snapshot["api_version"], 1)
+                self.assertIn("session_guard", snapshot["capabilities"])
+                self.assertIsNone(snapshot["cast_session"])
+                self.assertEqual(snapshot["telemetry"]["connection"], "idle")
+                proc.stdin.close()
+                self.assertEqual(proc.wait(timeout=5), 0)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                proc.stdout.close()
+                proc.stderr.close()
 
 
 if __name__ == "__main__":

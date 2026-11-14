@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,7 @@ MAX_TITLE = 200
 MAX_ENTRIES = 30
 MAX_OUTPUT = 1 << 20
 TARGETS = ("cast", "local")
+SESSION_ARGS: list[str] = []
 # A cast LOAD can take a while (debrid resolve, remux probe); control calls are quick.
 CAST_TIMEOUT = 240
 CONTROL_TIMEOUT = 30
@@ -72,7 +74,7 @@ def run(args: list[str], timeout: float | None) -> dict:
         # Without --follow, stdout contains only the final JSON result. Diagnostic
         # stderr is already covered by nstream's log, including during long local plays.
         p = subprocess.run(
-            [exe, "--json", *args],
+            [exe, "--json", *args, *SESSION_ARGS],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=timeout,
@@ -122,8 +124,8 @@ def prefer_cast() -> bool:
 
 def cmd_history() -> int:
     data = run(["--history"], CONTROL_TIMEOUT)
-    if data.get("error") == "usage":  # an nstream from before --history
-        return fail("history", "nstream è troppo vecchio: aggiornalo (serve --json --history)")
+    if data.get("error") == "usage":
+        return fail("history", "nstream non supporta --json --history: installa una versione compatibile")
     if not data.get("ok"):
         return fail("history", message_of(data))
     entries = []
@@ -240,10 +242,33 @@ def cmd_open() -> int:
     return emit({"kind": "open", "ok": True})
 
 
+def cmd_watch() -> int:
+    """Replace this adapter with nstream; QML consumes the versioned JSONL directly."""
+    exe = nstream_bin()
+    if exe is None:
+        return fail("watch", "nstream non è installato")
+    try:
+        os.execvpe(exe, [exe, "--json", "--watch"], child_env())
+    except OSError:
+        return fail("watch", "impossibile avviare l'osservatore nstream")
+
+
 def main(argv: list[str]) -> int:
+    global SESSION_ARGS
+    SESSION_ARGS = []
+    if len(argv) >= 4 and argv[-4] == "--session-id" and argv[-2] == "--device":
+        identity, device = argv[-3], argv[-1]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity) or not re.fullmatch(r"[\w .:-]{1,80}", device):
+            return fail("usage", "sessione non valida")
+        SESSION_ARGS = argv[-4:]
+        argv = argv[:-4]
     if not argv:
         return fail("usage", "comando mancante")
     cmd, rest = argv[0], argv[1:]
+    if SESSION_ARGS and cmd not in ("pause", "resume", "stop", "seek", "seekto", "volume", "subshift", "status"):
+        return fail("usage", "contesto sessione non valido per questo comando")
+    if cmd == "watch" and not rest and not SESSION_ARGS:
+        return cmd_watch()
     if cmd == "open" and not rest:
         return cmd_open()
     if cmd == "history" and not rest:

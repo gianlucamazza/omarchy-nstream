@@ -32,5 +32,12 @@
   "notify.local": "Richiesta apertura di %1 in mpv",
   "notify.failed": "Impossibile avviare %1",
   "process.failed": "Il comando non ha restituito una risposta valida.",
-  "local.pending": "Richiesta locale: %1. Gli eventuali errori compariranno qui."
+  "local.pending": "Richiesta locale: %1. Gli eventuali errori compariranno qui.",
+  "watch.incompatible": "Protocollo desktop nstream incompatibile; aggiorna nstream e il plugin.",
+  "watch.unavailable": "Collegamento a nstream perso; riconnessione…",
+  "state.stale": "Stato TV non disponibile · ultima lettura conservata",
+  "delivery.failed": "Errore consegna media: %1",
+  "receiver.failed": "Il ricevitore segnala un errore di riproduzione.",
+  "command.accepted": "Comando accettato; attendo la prossima lettura TV.",
+  "state.unavailable": "Stato TV non disponibile"
 }
