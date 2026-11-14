@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls as QQC
 import Quickshell
 import Quickshell.Io
 import qs.Ui
@@ -17,9 +18,15 @@ BarWidget {
   property bool opened: false
   property string target: "cast"
   property bool targetChosen: false
+  property bool showSubtitleTiming: false
 
   property var entries: []
+  property var historyRows: []
+  property string historyRowsSignature: ""
+  onTargetChanged: { refreshHistoryRows(); historyViewport.contentY = 0 }
   property var session: null
+  property var localSession: null
+  property bool canTransfer: false
   property var status: null
   property real watchSequence: 0
   property real watchReceived: 0
@@ -80,6 +87,9 @@ BarWidget {
       return
     }
     watchCompatible = true
+    canTransfer = d.capabilities.indexOf("transfer") >= 0
+    var nextLocal = d.local_session || null
+    if (JSON.stringify(localSession) !== JSON.stringify(nextLocal)) localSession = nextLocal
     reconnectDelay = 5000
     watchSequence = d.sequence
     watchReceived = Date.now()
@@ -93,7 +103,8 @@ BarWidget {
       statusError = ""
       message = ""
     }
-    session = next || null
+    if (JSON.stringify(session) !== JSON.stringify(next || null)) session = next || null
+    refreshHistoryRows()
     var t = d.telemetry || {}
     connectionState = String(t.connection || "disconnected")
     sampledAt = Number(t.sampled_at || 0)
@@ -112,8 +123,18 @@ BarWidget {
     openProc.command = helperCommand(["open"])
     openProc.running = true
   }
+  function transferTo(target, identity) {
+    if (!canTransfer || transferProc.running || controlProc.running || continueProc.running || localProc.running) return
+    var origin = target === "local" ? session : target === "cast" ? localSession : null
+    if (!origin || origin.transferable !== true || origin.session_id !== identity) return
+    if (target === "local" ? localSession !== null : session !== null) return
+    message = tr.t("transfer.pending")
+    messageIsError = false
+    transferProc.command = helperCommand(["transfer", target, identity])
+    transferProc.running = true
+  }
   function control(args) {
-    if (controlProc.running) return
+    if (controlProc.running || transferProc.running) return
     message = ""
     if (!watchCompatible || !session) return
     controlProc.sessionId = session.session_id
@@ -150,7 +171,11 @@ BarWidget {
     try { d = JSON.parse(text) } catch (e) { d = null }
     if (!d || typeof d !== "object" || d.kind !== kind || typeof d.ok !== "boolean")
       d = { kind: kind, ok: false, error: tr.t("process.failed") }
-    if (d.kind === "local") {
+    if (d.kind === "transfer") {
+      messageIsError = !d.ok
+      message = d.ok ? tr.t("transfer.done").arg(d.target === "cast" ? tr.t("target.cast") : tr.t("target.local"))
+        : String(d.error || tr.t("transfer.failed"))
+    } else if (d.kind === "local") {
       if (!d.ok) {
         messageIsError = true
         message = String(d.error || "")
@@ -207,6 +232,18 @@ BarWidget {
     }
     return parts.join(" · ")
   }
+  function historyEntries() {
+    if (!casting || target !== "cast") return entries
+    return entries.filter(function(entry) { return entry.title !== session.title })
+  }
+  function refreshHistoryRows() {
+    var rows = historyEntries()
+    var signature = JSON.stringify(rows)
+    if (signature !== historyRowsSignature) {
+      historyRowsSignature = signature
+      historyRows = rows
+    }
+  }
   function heroMeta() {
     if (starting !== "") return tr.t("starting").arg(starting)
     if (!casting) return tr.t("idle")
@@ -235,7 +272,11 @@ BarWidget {
       return JSON.stringify({api_version: root.watchCompatible ? 1 : null,
         connected: root.watchCompatible && Date.now() - root.watchReceived < 5000,
         sequence: root.watchSequence, connection: root.connectionState,
-        stale: root.telemetryStale, observing: root.opened})
+        stale: root.telemetryStale, observing: root.opened,
+        panel: {x: panel.cardOrigin.x, y: panel.cardOrigin.y,
+          width: panel.contentWidth, height: panel.contentHeight,
+          historyHeight: historyViewport.height, historyContentHeight: historyBody.implicitHeight,
+          outerScrollable: viewport.contentHeight > viewport.height}})
     }
   }
 
@@ -259,6 +300,7 @@ BarWidget {
     }
   }
   HelperProcess { id: controlProc }
+  HelperProcess { id: transferProc; kind: "transfer" }
   HelperProcess { id: openProc; kind: "open" }
   HelperProcess { id: continueProc; kind: "continue" }
   HelperProcess { id: localProc; kind: "local" }
@@ -323,179 +365,350 @@ BarWidget {
     id: panel
     anchorItem: iconButton; owner: root; bar: root.bar; open: root.opened
     contentWidth: fittedContentWidth(Style.space(420))
-    contentHeight: fittedContentHeight(Math.min(Style.space(600), body.implicitHeight))
+    contentHeight: fittedContentHeight(
+      playerSection.implicitHeight + libraryHeader.implicitHeight + Style.space(24) +
+      Math.min(historyBody.implicitHeight, Style.space(250)), Style.space(600))
     focusTarget: viewport
     Flickable {
       id: viewport
       anchors.fill: parent; clip: true
       contentWidth: width; contentHeight: body.implicitHeight
+      interactive: contentHeight > height
       boundsBehavior: Flickable.StopAtBounds
       Keys.onEscapePressed: root.close()
       Column {
         id: body
         width: viewport.width
-        spacing: Style.space(10)
+        spacing: Style.space(12)
 
-        Ui.PanelHero {
+        Column {
+          id: playerSection
           width: parent.width
-          title: tr.t("title")
-          meta: root.heroMeta()
-          trailingControl: Component {
+          spacing: Style.space(10)
+          Row {
+            width: parent.width
+            spacing: Style.space(12)
+            Plain {
+              width: parent.width - openButton.width - parent.spacing
+              anchors.verticalCenter: parent.verticalCenter
+              text: tr.t("title")
+              font.bold: true
+              font.pixelSize: Style.font.bodySmall
+            }
             Ui.Button {
+              id: openButton
               text: tr.t("open")
               enabled: !openProc.running
+              focusable: true
               onClicked: root.openNstream()
             }
           }
-        }
-        Plain {
-          width: parent.width
-          visible: root.message !== ""
-          text: root.message
-          wrapMode: Text.Wrap; elide: Text.ElideNone
-          maximumLineCount: 6
-          font.pixelSize: Style.font.bodySmall
-          color: root.messageIsError ? root.urgent : Commons.Color.foreground
-        }
-
-        // Now playing on the TV
-        Plain {
-          width: parent.width
-          visible: root.statusError !== ""
-          text: root.statusError
-          color: root.urgent
-          wrapMode: Text.Wrap; elide: Text.ElideNone; maximumLineCount: 4
-        }
-        Column {
-          width: parent.width
-          visible: root.casting
-          spacing: Style.space(6)
-          Plain { width: parent.width; text: root.session ? root.session.title : ""; elide: Text.ElideMiddle }
+          Plain {
+            width: parent.width
+            visible: root.message !== ""
+            text: root.message
+            wrapMode: Text.Wrap; elide: Text.ElideNone
+            maximumLineCount: 4
+            font.pixelSize: Style.font.bodySmall
+            color: root.messageIsError ? root.urgent : Commons.Color.foreground
+          }
           Caption {
             width: parent.width
-            text: root.stateLabel() + (root.duration > 0
-              ? " · " + root.clock(root.status.position) + " / " + root.clock(root.duration) : "")
+            visible: !root.casting
+            text: root.heroMeta()
           }
-          Ui.PanelSlider {
-            id: seekSlider
-            enabled: root.watchCompatible && !controlProc.running
+          Column {
             width: parent.width
-            bar: root.bar
-            visible: root.duration > 0
-            minimum: 0
-            maximum: Math.max(1, root.duration)
-            step: 1
-            value: root.status ? root.status.position : 0
-            onReleased: function(value) { root.control(["seekto", String(Math.round(value))]) }
-          }
-          Row {
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Style.space(6)
-            Ui.PanelActionButton {
-              iconText: root.iconBack; tooltipText: tr.t("act.back")
-              enabled: root.watchCompatible && !controlProc.running
-              onClicked: root.control(["seek", "-30"])
-            }
-            Ui.PanelActionButton {
-              iconText: root.playing ? root.iconPause : root.iconPlay
-              tooltipText: root.playing ? tr.t("act.pause") : tr.t("act.play")
-              enabled: root.watchCompatible && !controlProc.running
-              onClicked: root.control([root.playing ? "pause" : "resume"])
-            }
-            Ui.PanelActionButton {
-              iconText: root.iconForward; tooltipText: tr.t("act.forward")
-              enabled: root.watchCompatible && !controlProc.running
-              onClicked: root.control(["seek", "30"])
-            }
-            Ui.PanelActionButton {
-              iconText: root.iconStop; tooltipText: tr.t("act.stop")
-              hoverColor: root.urgent
-              enabled: root.watchCompatible && !controlProc.running
-              onClicked: root.control(["stop"])
-            }
-          }
-          Row {
-            width: parent.width
+            visible: root.casting
             spacing: Style.space(8)
-            visible: root.status !== null && root.status.volume >= 0
-            Caption { id: volumeLabel; anchors.verticalCenter: parent.verticalCenter; text: tr.t("volume") }
+            Plain {
+              width: parent.width
+              text: root.session ? root.session.title : ""
+              font.pixelSize: Style.font.title
+              font.bold: true
+              wrapMode: Text.Wrap
+              maximumLineCount: 2
+              elide: Text.ElideRight
+            }
+            Row {
+              width: parent.width
+              spacing: Style.space(12)
+              Caption {
+                width: Math.max(0, parent.width - stateText.width - parent.spacing)
+                text: root.heroMeta()
+              }
+              Caption {
+                id: stateText
+                width: Math.min(implicitWidth, parent.width * 0.55)
+                text: root.stateLabel()
+              }
+            }
+            Plain {
+              width: parent.width
+              visible: root.statusError !== ""
+              text: root.statusError
+              color: root.urgent
+              wrapMode: Text.Wrap; elide: Text.ElideNone; maximumLineCount: 4
+              font.pixelSize: Style.font.bodySmall
+            }
             Ui.PanelSlider {
-              enabled: root.watchCompatible && !controlProc.running
-              width: parent.width - volumeLabel.width - parent.spacing
-              anchors.verticalCenter: parent.verticalCenter
+              id: seekSlider
+              enabled: root.watchCompatible && !root.telemetryStale && !controlProc.running && !transferProc.running
+              width: parent.width
               bar: root.bar
-              minimum: 0; maximum: 100; step: 1; integer: true
-              value: root.status ? root.status.volume : 0
-              onReleased: function(value) { root.control(["volume", String(Math.round(value))]) }
+              visible: root.duration > 0
+              minimum: 0; maximum: Math.max(1, root.duration); step: 1
+              value: root.status ? root.status.position : 0
+              onReleased: function(value) { root.control(["seekto", String(Math.round(value))]) }
+            }
+            Row {
+              width: parent.width
+              visible: root.duration > 0
+              Caption { width: parent.width / 2; text: root.clock(root.status ? root.status.position : 0) }
+              Caption {
+                width: parent.width / 2
+                horizontalAlignment: Text.AlignRight
+                text: tr.t("time.remaining").arg(root.clock(Math.max(0,
+                  root.duration - (root.status ? root.status.position : 0))))
+              }
+            }
+            Row {
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: Style.space(12)
+              Ui.Button {
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.iconBack
+                text: tr.t("seek.back")
+                tooltipText: tr.t("act.back")
+                focusable: true
+                enabled: root.watchCompatible && !root.telemetryStale && !controlProc.running && !transferProc.running
+                onClicked: root.control(["seek", "-30"])
+              }
+              Ui.PanelActionButton {
+                size: Style.space(42)
+                fontSize: Style.font.title
+                bordered: true
+                focusable: true
+                iconText: root.playing ? root.iconPause : root.iconPlay
+                tooltipText: root.playing ? tr.t("act.pause") : tr.t("act.play")
+                enabled: root.watchCompatible && !root.telemetryStale && !controlProc.running && !transferProc.running
+                onClicked: root.control([root.playing ? "pause" : "resume"])
+              }
+              Ui.Button {
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.iconForward
+                text: tr.t("seek.forward")
+                tooltipText: tr.t("act.forward")
+                focusable: true
+                enabled: root.watchCompatible && !root.telemetryStale && !controlProc.running && !transferProc.running
+                onClicked: root.control(["seek", "30"])
+              }
+              Ui.PanelActionButton {
+                size: Style.space(30)
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.iconStop; tooltipText: tr.t("act.stop")
+                hoverColor: root.urgent
+                focusable: true
+                enabled: root.watchCompatible && !controlProc.running && !transferProc.running
+                onClicked: root.control(["stop"])
+              }
+            }
+            Row {
+              width: parent.width
+              spacing: Style.space(8)
+              visible: root.status !== null && root.status.volume >= 0
+              Caption { id: volumeLabel; anchors.verticalCenter: parent.verticalCenter; text: tr.t("volume") }
+              Ui.PanelSlider {
+                width: Math.max(0, parent.width - volumeLabel.width - volumeValue.width - parent.spacing * 2)
+                anchors.verticalCenter: parent.verticalCenter
+                enabled: root.watchCompatible && !root.telemetryStale && !controlProc.running && !transferProc.running
+                bar: root.bar
+                minimum: 0; maximum: 100; step: 1; integer: true
+                value: root.status ? root.status.volume : 0
+                onReleased: function(value) { root.control(["volume", String(Math.round(value))]) }
+              }
+              Caption {
+                id: volumeValue
+                width: Style.space(36)
+                horizontalAlignment: Text.AlignRight
+                anchors.verticalCenter: parent.verticalCenter
+                text: tr.t("volume.percent").arg(Commons.I18n.formatNumber(root.status ? root.status.volume : 0, 0))
+              }
+            }
+            Ui.Button {
+              text: tr.t("transfer.local")
+              focusable: true
+              visible: root.canTransfer
+              enabled: root.session && root.session.transferable === true && !root.localSession &&
+                !transferProc.running && !controlProc.running && !continueProc.running && !localProc.running
+              onClicked: root.transferTo("local", root.session.session_id)
+            }
+            Ui.Button {
+              text: tr.t("subtitles.timing")
+              iconText: root.showSubtitleTiming ? "󰅃" : "󰅀"
+              focusable: true
+              onClicked: root.showSubtitleTiming = !root.showSubtitleTiming
+            }
+            Row {
+              width: parent.width
+              visible: root.showSubtitleTiming
+              spacing: Style.space(8)
+              Caption {
+                width: Math.max(0, parent.width - subtitleEarlier.width - subtitleLater.width - parent.spacing * 2)
+                anchors.verticalCenter: parent.verticalCenter
+                text: tr.t("subtitles.hint")
+              }
+              Ui.Button {
+                id: subtitleEarlier
+                text: tr.t("sub.earlier"); bordered: true; focusable: true
+                enabled: root.watchCompatible && !controlProc.running && !transferProc.running
+                onClicked: root.control(["subshift", "-0.5"])
+              }
+              Ui.Button {
+                id: subtitleLater
+                text: tr.t("sub.later"); bordered: true; focusable: true
+                enabled: root.watchCompatible && !controlProc.running && !transferProc.running
+                onClicked: root.control(["subshift", "0.5"])
+              }
             }
           }
-          Row {
-            spacing: Style.space(4)
-            Caption { anchors.verticalCenter: parent.verticalCenter; text: tr.t("subtitles") }
+          Column {
+            width: parent.width
+            visible: root.localSession !== null
+            spacing: Style.space(6)
+            Caption { text: tr.t("local.active") }
+            Plain { width: parent.width; text: root.localSession ? root.localSession.title : "" }
             Ui.Button {
-              text: tr.t("sub.earlier"); bordered: true; enabled: root.watchCompatible && !controlProc.running
-              onClicked: root.control(["subshift", "-0.5"])
-            }
-            Ui.Button {
-              text: tr.t("sub.later"); bordered: true; enabled: root.watchCompatible && !controlProc.running
-              onClicked: root.control(["subshift", "0.5"])
+              text: tr.t("transfer.tv")
+              focusable: true
+              visible: root.canTransfer
+              enabled: root.localSession && root.localSession.transferable === true && !root.casting &&
+                !transferProc.running && !controlProc.running && !continueProc.running && !localProc.running
+              onClicked: root.transferTo("cast", root.localSession.session_id)
             }
           }
           Ui.PanelSeparator { width: parent.width }
         }
 
-        // Continue watching
-        Ui.PanelSectionHeader { width: parent.width; text: tr.t("continue") }
-        Caption {
-          width: parent.width
-          visible: root.localTitle !== ""
-          text: tr.t("local.pending").arg(root.localTitle)
-          wrapMode: Text.Wrap; elide: Text.ElideNone; maximumLineCount: 3
-        }
-        Ui.ButtonGroup {
-          focusable: false
-          value: root.target
-          options: [
-            { value: "cast", label: tr.t("target.cast") },
-            { value: "local", label: tr.t("target.local") }
-          ]
-          onChanged: function(value) { root.target = value; root.targetChosen = true }
-        }
         Column {
+          id: libraryHeader
           width: parent.width
-          spacing: Style.space(2)
+          spacing: Style.space(8)
+          Row {
+            width: parent.width
+            spacing: Style.space(12)
+            Ui.PanelSectionHeader {
+              width: Math.max(0, parent.width - targetPicker.width - parent.spacing)
+              anchors.verticalCenter: parent.verticalCenter
+              text: tr.t("continue")
+            }
+            Ui.ButtonGroup {
+              id: targetPicker
+              value: root.target
+              options: [
+                { value: "cast", label: tr.t("target.cast") },
+                { value: "local", label: tr.t("target.local") }
+              ]
+              onChanged: function(value) { root.target = value; root.targetChosen = true }
+            }
+          }
           Caption {
             width: parent.width
-            visible: root.historyError !== "" || root.entries.length === 0
-            text: root.historyError !== "" ? root.historyError : tr.t("empty")
+            visible: root.localTitle !== ""
+            text: tr.t("local.pending").arg(root.localTitle)
+            wrapMode: Text.Wrap; elide: Text.ElideNone; maximumLineCount: 3
+          }
+          Caption {
+            width: parent.width
+            visible: root.historyError !== "" || root.historyRows.length === 0
+            text: root.historyError !== "" ? root.historyError :
+              (root.entries.length === 0 ? tr.t("empty") : tr.t("empty.other"))
             wrapMode: Text.Wrap; elide: Text.ElideNone; maximumLineCount: 4
           }
-          Repeater {
-            model: root.entries.slice(0, root.historyLimit)
-            Item {
-              id: entryRow
-              required property var modelData
-              width: parent ? parent.width : 0
-              implicitHeight: Math.max(entryText.implicitHeight, playButton.implicitHeight) + Style.space(8)
-              opacity: root.starting !== "" && root.starting !== modelData.title ? 0.45 : 1
-              Column {
-                id: entryText
-                anchors.left: parent.left
-                anchors.right: playButton.left
-                anchors.rightMargin: Style.space(8)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(2)
-                Plain { width: parent.width; text: entryRow.modelData.title }
-                Caption { width: parent.width; text: root.entryCaption(entryRow.modelData); visible: text !== "" }
-              }
-              Ui.PanelActionButton {
-                id: playButton
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                iconText: root.iconPlay
-                tooltipText: root.target === "cast" ? tr.t("act.castHere") : tr.t("act.playHere")
-                enabled: root.target === "local" ? !localProc.running : !continueProc.running
-                onClicked: root.resumeEntry(entryRow.modelData)
+        }
+        Flickable {
+          id: historyViewport
+          width: parent.width
+          height: Math.min(historyBody.implicitHeight, Math.max(Style.space(60),
+            viewport.height - playerSection.implicitHeight - libraryHeader.implicitHeight - body.spacing * 2))
+          contentWidth: width; contentHeight: historyBody.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          QQC.ScrollBar.vertical: QQC.ScrollBar {
+            id: historyScroll
+            policy: QQC.ScrollBar.AsNeeded
+            active: visible
+            width: Style.space(4)
+            padding: 0
+            contentItem: Rectangle {
+              implicitWidth: Style.space(3)
+              radius: width / 2
+              color: root.foreground
+              opacity: 0.35
+            }
+            background: null
+          }
+          Column {
+            id: historyBody
+            width: historyViewport.width - (historyScroll.visible ? historyScroll.width + Style.space(4) : 0)
+            Repeater {
+              model: root.historyRows.slice(0, root.historyLimit)
+              Ui.CursorSurface {
+                id: entryRow
+                required property var modelData
+                width: historyBody.width
+                implicitHeight: Math.max(entryText.implicitHeight, playButton.implicitHeight) + Style.space(16)
+                activeFocusOnTab: true
+                onActiveFocusChanged: {
+                  if (!activeFocus) return
+                  var top = y
+                  var bottom = y + height
+                  if (top < historyViewport.contentY) historyViewport.contentY = top
+                  else if (bottom > historyViewport.contentY + historyViewport.height)
+                    historyViewport.contentY = bottom - historyViewport.height
+                }
+                hasCursor: entryMouse.containsMouse || activeFocus
+                enabled: !transferProc.running && (root.target === "local" ? !localProc.running : !continueProc.running)
+                opacity: root.starting !== "" && root.starting !== modelData.title ? 0.45 : 1
+                Keys.onReturnPressed: if (enabled) root.resumeEntry(modelData)
+                Keys.onSpacePressed: if (enabled) root.resumeEntry(modelData)
+                MouseArea {
+                  id: entryMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: root.resumeEntry(entryRow.modelData)
+                }
+                Column {
+                  id: entryText
+                  anchors.left: parent.left; anchors.leftMargin: Style.space(8)
+                  anchors.right: playButton.left; anchors.rightMargin: Style.space(12)
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(3)
+                  Plain { width: parent.width; text: entryRow.modelData.title }
+                  Caption { width: parent.width; text: root.entryCaption(entryRow.modelData); visible: text !== "" }
+                  Rectangle {
+                    width: parent.width
+                    height: Style.space(2)
+                    visible: entryRow.modelData.duration > 0 && !entryRow.modelData.next
+                    color: Style.selectedFillFor(root.foreground, Commons.Color.accent)
+                    Rectangle {
+                      height: parent.height
+                      width: parent.width * Math.max(0, Math.min(1,
+                        entryRow.modelData.position / Math.max(1, entryRow.modelData.duration)))
+                      color: root.foreground
+                      opacity: 0.55
+                    }
+                  }
+                }
+                Ui.PanelActionButton {
+                  id: playButton
+                  anchors.right: parent.right; anchors.rightMargin: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                  iconText: root.iconPlay
+                  tooltipText: root.target === "cast" ? tr.t("act.castHere") : tr.t("act.playHere")
+                  onClicked: root.resumeEntry(entryRow.modelData)
+                }
               }
             }
           }

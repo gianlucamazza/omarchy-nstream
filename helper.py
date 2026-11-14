@@ -194,7 +194,11 @@ def cmd_action(action: str, args: list[str], timeout: float | None = CONTROL_TIM
     if not data.get("ok"):
         return fail(action, message_of(data))
     out = {"kind": action, "ok": True}
-    if action in ("continue", "local"):
+    if action == "transfer":
+        if data.get("source_stopped") is not True:
+            return fail("transfer", "trasferimento incompleto; controlla i player")
+        out["target"] = text(data.get("target"), 10)
+    if action in ("continue", "local", "transfer"):
         out["title"] = text(data.get("title"))
         out["device"] = text(data.get("device"), 80)
         out["notice"] = text(data.get("notice"), 300) or (
@@ -283,6 +287,11 @@ def main(argv: list[str]) -> int:
         return cmd_watch()
     if cmd == "open" and not rest:
         return cmd_open()
+    if cmd == "transfer" and len(rest) == 2 and not SESSION_ARGS:
+        target, identity = rest
+        if target not in TARGETS or not re.fullmatch(r"[a-f0-9]{32,64}", identity):
+            return fail("transfer", "sessione o destinazione non valida")
+        return cmd_action("transfer", ["--transfer-to", target, "--session-id", identity], 300)
     if cmd == "history" and not rest:
         return cmd_history()
     if cmd == "status" and not rest:

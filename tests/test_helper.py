@@ -36,6 +36,23 @@ def call(*argv: str, results: list[dict] | None = None) -> tuple[dict, list[list
     return json.loads(out.getvalue()), calls
 
 
+
+class TransferTest(unittest.TestCase):
+    def test_requires_explicit_retirement_confirmation(self):
+        out, calls = call("transfer", "local", "a" * 32,
+                          results=[{"ok": True, "source_stopped": True, "target": "local"}])
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["target"], "local")
+        self.assertEqual(calls, [["--transfer-to", "local", "--session-id", "a" * 32]])
+        out, _ = call("transfer", "cast", "a" * 32, results=[{"ok": True}])
+        self.assertFalse(out["ok"])
+
+    def test_invalid_identity_never_reaches_core(self):
+        out, calls = call("transfer", "local", "bad/identity")
+        self.assertFalse(out["ok"])
+        self.assertEqual(calls, [])
+
+
 class HistoryTest(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("NSTREAM_CONTRACT_TEST"), "requires compatible installed nstream")
     def test_real_nstream_history_contract(self):

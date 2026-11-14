@@ -17,7 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qt6-declarative-dev-tools qml6-module-qttest qml6-module-qtquick qml6-module-qtqml-workerscript
-          python3 -m pip install nstream==1.47.0
+          python3 -m pip install nstream==1.48.0
       - name: helper, QML action and real protocol tests
         env:
           NSTREAM_CONTRACT_TEST: "1"

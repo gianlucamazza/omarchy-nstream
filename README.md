@@ -8,6 +8,20 @@ A remote for [nstream](https://github.com/gianlucamazza/nstream) in the
 - **Continue watching:** your nstream history, one click to resume on the TV or in mpv on
   this computer. A finished episode continues with the next one.
 
+The panel keeps the current title, timeline and transport controls above the scrollable
+continue-watching list. Volume includes a numeric level; subtitle timing is expandable.
+The title already playing on the TV is omitted from the TV resume list, so its older
+saved history progress does not compete with the live player. Choosing this computer
+keeps that title available for local playback. Rows support whole-row clicks and keyboard
+focus; the player remains visible while browsing a long history.
+
+With a core advertising the `transfer` capability, the current-player area also offers
+**Move to this computer** or **Move to TV**. These move the active film at its live
+position and stop the source only after destination verification. They work without
+history, require an available destination and transferable session metadata, and stay
+disabled for legacy/mirror sessions. Transfer requires nstream 1.48.0 or newer.
+The continue-watching target buttons resume saved history independently.
+
 The bar icon lights up while a cast is live. Everything else stays in nstream itself; the
 **Open nstream** button opens its TUI. With the shared `nstream-launch` helper,
 repeated activation focuses the existing window instead of creating another session.
@@ -105,4 +119,4 @@ QML action coverage runs the actual Open button binding and panel action functio
 Qt Quick Test with desktop services substituted. It covers idle/no-session use, concurrent
 cast controls, repeat clicks and activation errors. It requires Qt's `qmltestrunner` (Qt 6
 Declarative tools and QtTest/QtQuick QML modules), not Omarchy or Quickshell. CI requires
-these tests and the history/watch contracts against nstream 1.47.0 from PyPI.
+these tests and the history/watch contracts against nstream 1.48.0 from PyPI.

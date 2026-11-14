@@ -40,5 +40,18 @@
   "receiver.failed": "The receiver reports a playback error.",
   "command.accepted": "Command accepted; waiting for the next TV reading.",
   "state.unavailable": "TV status unavailable",
-  "open.already": "nstream is already open; bring its window forward."
+  "open.already": "nstream is already open; bring its window forward.",
+  "time.remaining": "%1 left",
+  "seek.back": "−30 s",
+  "seek.forward": "+30 s",
+  "volume.percent": "%1%",
+  "subtitles.timing": "Subtitle timing",
+  "subtitles.hint": "Earlier / later",
+  "empty.other": "Other titles will appear here.",
+  "transfer.local": "Move to this computer",
+  "transfer.tv": "Move to the TV",
+  "transfer.pending": "Preparing the destination; playback continues here…",
+  "transfer.done": "Playback moved to %1",
+  "transfer.failed": "Transfer did not complete",
+  "local.active": "Playing on this computer"
 }

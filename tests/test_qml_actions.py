@@ -54,7 +54,7 @@ class QmlActionsTest(unittest.TestCase):
         enabled = re.search(r'enabled:\s*([^\n]+)', button).group(1)
         clicked = re.search(r'onClicked:\s*([^\n]+)', button).group(1)
         functions = '\n'.join(function_source(panel, name) for name in
-                              ('openNstream', 'control', 'helperCommand', 'receive', 'close'))
+                              ('openNstream', 'control', 'helperCommand', 'receive', 'close', 'historyEntries', 'refreshHistoryRows', 'transferTo'))
         qml = '''import QtQuick 2.15
 import QtTest 1.2
 TestCase {
@@ -63,6 +63,13 @@ TestCase {
     id: root
     property bool watchCompatible: false
     property var session: null
+    property var localSession: null
+    property bool canTransfer: false
+    property var entries: []
+    property var historyRows: []
+    property string historyRowsSignature: ""
+    property string target: "cast"
+    readonly property bool casting: session !== null
     property bool opened: true
     property string message: ""
     property bool messageIsError: false
@@ -70,6 +77,9 @@ TestCase {
     FUNCTIONS
   }
   QtObject { id: tr; function t(key) { return key } }
+  QtObject { id: transferProc; property bool running: false; property var command: [] }
+  QtObject { id: continueProc; property bool running: false }
+  QtObject { id: localProc; property bool running: false }
   QtObject { id: openProc; property bool running: false; property var command: [] }
   QtObject { id: controlProc; property bool running: false; property var command: [];
     property string kind: ""; property string sessionId: "" }
@@ -84,9 +94,38 @@ TestCase {
     controlProc.running = false
     root.watchCompatible = false
     root.session = null
+    root.localSession = null
+    root.canTransfer = false
+    transferProc.running = false
+    transferProc.command = []
+    root.entries = []
+    root.target = "cast"
     root.opened = true
     root.message = ""
     root.messageIsError = false
+  }
+  function test_transfer_requires_capability_and_owned_transferable_source() {
+    root.canTransfer = true
+    root.session = {session_id:"one", transferable:false}
+    root.transferTo("local", "one")
+    verify(!transferProc.running)
+    root.session = {session_id:"one", transferable:true}
+    root.transferTo("local", "stale")
+    verify(!transferProc.running)
+    root.transferTo("local", "one")
+    verify(transferProc.running)
+    compare(transferProc.command.slice(-3).join(","), "transfer,local,one")
+    verify(!root.messageIsError)
+  }
+  function test_transfer_rejects_busy_destination_and_reports_failure() {
+    root.canTransfer = true
+    root.session = {session_id:"one", transferable:true}
+    root.localSession = {session_id:"busy"}
+    root.transferTo("local", "one")
+    verify(!transferProc.running)
+    root.receive(JSON.stringify({kind:"transfer",ok:false,error:"target busy"}), "transfer")
+    verify(root.messageIsError)
+    compare(root.message, "target busy")
   }
   function test_open_without_session_or_observer() {
     verify(button.enabled)
@@ -120,6 +159,26 @@ TestCase {
     verify(root.opened)
     verify(!root.messageIsError)
     compare(root.message, "open.already")
+  }
+  function test_current_cast_is_not_repeated_with_stale_history_progress() {
+    root.entries = [{title:"Active movie",position:10}, {title:"Other movie",position:20}]
+    root.session = {title:"Active movie"}
+    compare(root.historyEntries().length, 1)
+    compare(root.historyEntries()[0].title, "Other movie")
+    root.target = "local"
+    compare(root.historyEntries().length, 2)
+    root.target = "cast"
+    root.session = null
+    compare(root.historyEntries().length, 2)
+  }
+  function test_live_updates_do_not_rebuild_unchanged_history_rows() {
+    root.entries = [{title:"Active movie",position:10}, {title:"Other movie",position:20}]
+    root.session = {title:"Active movie"}
+    root.refreshHistoryRows()
+    var stableRows = root.historyRows
+    root.entries = [{title:"Active movie",position:40}, {title:"Other movie",position:20}]
+    root.refreshHistoryRows()
+    verify(root.historyRows === stableRows)
   }
   function test_confirmed_activation_closes_panel() {
     root.receive(JSON.stringify({kind:"open",ok:true,result:"focused"}), "open")

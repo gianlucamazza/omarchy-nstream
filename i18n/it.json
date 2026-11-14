@@ -40,5 +40,18 @@
   "receiver.failed": "Il ricevitore segnala un errore di riproduzione.",
   "command.accepted": "Comando accettato; attendo la prossima lettura TV.",
   "state.unavailable": "Stato TV non disponibile",
-  "open.already": "nstream è già aperto; porta in primo piano la sua finestra."
+  "open.already": "nstream è già aperto; porta in primo piano la sua finestra.",
+  "time.remaining": "mancano %1",
+  "seek.back": "−30 s",
+  "seek.forward": "+30 s",
+  "volume.percent": "%1%",
+  "subtitles.timing": "Sincronizzazione sottotitoli",
+  "subtitles.hint": "Anticipa / ritarda",
+  "empty.other": "Qui compariranno gli altri titoli.",
+  "transfer.local": "Sposta sul computer",
+  "transfer.tv": "Sposta sulla TV",
+  "transfer.pending": "Preparo il destinatario; la visione continua qui…",
+  "transfer.done": "Visione spostata su %1",
+  "transfer.failed": "Trasferimento non completato",
+  "local.active": "In riproduzione su questo computer"
 }
